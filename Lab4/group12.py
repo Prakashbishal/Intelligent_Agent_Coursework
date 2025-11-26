@@ -62,7 +62,7 @@ class Company12(TradingCompany):
                 self._planned_schedules[trade] = (vessel, sched)
 
                 cost = self.predict_cost(vessel, trade)
-                bid_amount = cost * 1.2
+                bid_amount = cost * 5
                 bids.append(Bid(amount=bid_amount, trade=trade))
 
                 print(
