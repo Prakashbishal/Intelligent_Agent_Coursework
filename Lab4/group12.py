@@ -4,17 +4,12 @@ class Company12(TradingCompany):
     def __init__(self, fleet, name):
         super().__init__(fleet, name)
         self._future_trades = None
-        # Maps each trade to the vessel and schedule we planned for it in inform()
         self._planned_schedules = {}
 
-
-    #  Store information about trades that will appear in the next auction.
     def pre_inform(self, trades, time):
-        print(f"pre_inform called: storing {len(trades)} upcoming trades for time {time}")
+        print(f"[pre_inform] {len(trades)} trades announced for time {time}")
         self._future_trades = trades
 
-    # Tentatively add the trade to this vessel's schedule.
-    # Returns (True, new_schedule) if the resulting schedule is feasible, otherwise (False, None).
     def try_schedule_on_vessel(self, vessel, trade):
         try:
             new_schedule = vessel.schedule.copy()
@@ -24,34 +19,28 @@ class Company12(TradingCompany):
                 return True, new_schedule
 
             print(
-                f"Schedule not feasible for vessel {vessel.name} "
-                f"with trade {getattr(trade, 'id', 'unknown')} (time-window/capacity/other)."
+                f"[schedule] Infeasible for vessel {vessel.name} "
+                f"with trade {getattr(trade, 'id', 'unknown')}"
             )
             return False, None
 
         except Exception as e:
-            print(f"Exception while trying schedule on vessel {vessel.name}: {e}")
+            print(f"[schedule] Error on vessel {vessel.name}: {e}")
             return False, None
 
-
-    # Try all vessels and return the first (vessel, schedule) pair that yields a feasible schedule.
-    # If none are feasible, return (None, None).
     def plan_for_trade(self, trade):
         for vessel in self._fleet:
-            feasible, sched = self.try_schedule_on_vessel(vessel, trade)
-            if feasible:
+            ok, sched = self.try_schedule_on_vessel(vessel, trade)
+            if ok:
                 return vessel, sched
 
         print(
-            f"No feasible vessel found for trade "
-            f"{getattr(trade, 'id', 'unknown')} – will NOT bid on this trade."
+            f"[plan] No feasible vessel for trade {getattr(trade, 'id', 'unknown')}, skipping."
         )
         return None, None
 
-    # Decide which trades to bid on in the current auction round.
-    # Only bid on trades for which we can find at least one feasible vessel schedule.
     def inform(self, trades, *args, **kwargs):
-        print(f"\ninform called: {len(trades)} trades offered this round")
+        print(f"\n[inform] {len(trades)} trades in this auction")
         bids = []
         self._planned_schedules = {}
 
@@ -61,7 +50,7 @@ class Company12(TradingCompany):
                 destination = getattr(trade, "destination_port", getattr(trade, "end_port", None))
 
                 print(
-                    f"Trade {i}: origin={getattr(origin, 'name', origin)}, "
+                    f"[trade {i}] origin={getattr(origin, 'name', origin)}, "
                     f"dest={getattr(destination, 'name', destination)}, "
                     f"amount={getattr(trade, 'amount', 'NA')}"
                 )
@@ -69,43 +58,41 @@ class Company12(TradingCompany):
                 vessel, sched = self.plan_for_trade(trade)
                 if vessel is None or sched is None:
                     continue
-               
+
                 self._planned_schedules[trade] = (vessel, sched)
 
                 cost = self.predict_cost(vessel, trade)
-                # preliminary agent: bid at our estimated cost
-                bid_amount = cost*1.2 
+                bid_amount = cost * 1.2
                 bids.append(Bid(amount=bid_amount, trade=trade))
+
                 print(
-                    f"Trade {i}: vessel={vessel.name}, "
-                    f"bid={bid_amount}, cost_estimate={cost}"
+                    f"[bid] trade {i}, vessel={vessel.name}, "
+                    f"bid={bid_amount:.2f}, cost_estimate={cost:.2f}"
                 )
 
             except Exception as e:
-                print(f"Failed to process trade {i}: {e}")
+                print(f"[inform] Failed to process trade {i}: {e}")
 
-        print(f"Total bids prepared: {len(bids)}")
+        print(f"[inform] Prepared {len(bids)} bids")
         return bids
 
-    # Apply schedules for the trades we actually won in the auction.
-    # Uses the plans computed earlier in inform(), with a fallback recomputation if needed.
     def receive(self, contracts, auction_ledger=None, *args, **kwargs):
-        print(f"\nreceive called: {len(contracts)} contracts won")
+        print(f"\n[receive] Won {len(contracts)} contracts")
 
         for i, contract in enumerate(contracts):
             trade = contract.trade
-            planned = self._planned_schedules.get(trade, None)
+            planned = self._planned_schedules.get(trade)
 
             if planned is None:
                 print(
-                    f"No stored plan for trade {getattr(trade, 'id', 'unknown')} "
-                    f"in receive(); recomputing schedule."
+                    f"[receive] No stored plan for trade {getattr(trade, 'id', 'unknown')}, "
+                    f"recomputing."
                 )
                 vessel, sched = self.plan_for_trade(trade)
                 if vessel is None or sched is None:
                     print(
-                        f"Even recomputed schedule is infeasible for trade "
-                        f"{getattr(trade, 'id', 'unknown')}. Leaving it unscheduled."
+                        f"[receive] Still infeasible for trade "
+                        f"{getattr(trade, 'id', 'unknown')}, leaving unscheduled."
                     )
                     continue
             else:
@@ -114,27 +101,25 @@ class Company12(TradingCompany):
             try:
                 if not sched.verify_schedule():
                     print(
-                        f"Planned schedule for trade {getattr(trade, 'id', 'unknown')} "
-                        f"failed verify_schedule() in receive(). Skipping."
+                        f"[receive] Planned schedule for trade "
+                        f"{getattr(trade, 'id', 'unknown')} failed verification, skipping."
                     )
                     continue
 
                 print(
-                    f"Applying schedule for trade {getattr(trade, 'id', 'unknown')} "
+                    f"[receive] Applying schedule for trade {getattr(trade, 'id', 'unknown')} "
                     f"to vessel {vessel.name}"
                 )
                 vessel.schedule = sched
 
             except Exception as e:
                 print(
-                    f"Exception while applying schedule for trade "
+                    f"[receive] Error applying schedule for trade "
                     f"{getattr(trade, 'id', 'unknown')} on vessel {vessel.name}: {e}"
                 )
 
         self._future_trades = None
 
-    # Return a simple cost estimate for performing this trade with this vessel.
-    # This is intentionally basic for the preliminary submission.
     def predict_cost(self, vessel, trade):
         try:
             origin = getattr(trade, "origin_port", getattr(trade, "start_port", "UNKNOWN"))
@@ -142,11 +127,21 @@ class Company12(TradingCompany):
             origin_name = getattr(origin, "name", origin)
             dest_name = getattr(destination, "name", destination)
 
-            total_cost = 1000.0  
-            print(f"Predicted cost for trade {origin_name}->{dest_name}: {total_cost}")
+            total_cost = 1000.0
+            print(f"[cost] {origin_name} -> {dest_name}, estimated cost={total_cost:.2f}")
             return total_cost
 
         except Exception as e:
-            print(f"Failed to predict cost: {e}")
-            # Return a large number to avoid accidentally underbidding when we are unsure
+            print(f"[cost] Failed to estimate cost: {e}")
             return 10_000.0
+
+
+# Notes:
+# getattr is used to prevent crashing and null errors
+# verbose is used to debug the code in terminal
+
+# Places to improve:
+# 1. bid_amount
+# 2. predict_cost
+# 3. plan_for_trade
+# 4. pre_inform(use the future_trade concept)
