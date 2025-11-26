@@ -1,6 +1,6 @@
 # main_competition_playground.py
 from mable.examples import environment, fleets, companies
-import groupn
+import group12
 
 def build_specification():
     number_of_month = 5 
@@ -14,7 +14,7 @@ def build_specification():
     # My custom agent
     my_fleet = fleets.mixed_fleet(num_suezmax=1, num_aframax=1, num_vlcc=1)
     specifications_builder.add_company(
-        groupn.Companyn.Data(groupn.Companyn, my_fleet, groupn.Companyn.__name__)
+        group12.Company12.Data(group12.Company12, my_fleet, group12.Company12.__name__)
     )
 
     # Competitor agents

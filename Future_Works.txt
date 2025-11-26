@@ -1,0 +1,48 @@
+Where to Improve 
+
+
+1. predict_cost – better cost model
+Right now: constant 1000 for every trade.
+
+We can:
+Use port distances (if accessible from the trade or via the environment).
+Use vessel speed and consumption to estimate fuel.
+Add port handling costs.
+Include idle time as cost (if a schedule leads to a lot of waiting).
+
+2. bid_amount in inform – add profit strategy
+Currently:
+bid_amount = cost
+
+Later:
+Add a profit margin, e.g. cost * 1.2.
+Use a dynamic margin: smaller when competition is tough, larger for risky or long-distance routes.
+Possibly adjust based on how busy your fleet is (if idle, accept lower margins; if busy, demand higher).
+
+3. _plan_for_trade – smarter vessel selection
+Right now, you simply take the first vessel that yields a feasible schedule.
+
+Later:
+Evaluate several feasible vessels and pick the cheapest schedule (based on predict_cost).
+Prefer vessels that are geographically closer to origin to reduce deadheading.
+Avoid leaving some vessels completely idle if that hurts revenue.
+
+4. Use _future_trades in pre_inform
+Currently you store future trades but ignore them.
+
+Later:
+Use that info to avoid filling your schedule with low-profit trades if a bigger trade is coming soon.
+Implement a basic lookahead strategy: “accept this trade only if it doesn’t block me from a potentially more 
+profitable future trade.”
+
+
+5. Use auction_ledger in receive for competitor modelling
+Right now you ignore auction_ledger.
+
+Later:
+Look through the ledger to see:
+What other companies bid.
+Which bids won.
+What typical margins competitors use.
+Estimate competitor profit factors over time.
+Adapt your bidding strategy to undercut them slightly when it’s worth it.

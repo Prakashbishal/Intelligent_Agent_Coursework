@@ -1,6 +1,6 @@
 from mable.cargo_bidding import TradingCompany, Bid
 
-class Companyn(TradingCompany):
+class Company12(TradingCompany):
     def __init__(self, fleet, name):
         super().__init__(fleet, name)
         self._future_trades = None
