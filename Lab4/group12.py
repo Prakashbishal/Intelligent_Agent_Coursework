@@ -8,6 +8,7 @@ class Company12(TradingCompany):
         self._planned_schedules = {}
 
 
+
     #  Store information about trades that will appear in the next auction.
     def pre_inform(self, trades, time):
         print(f"pre_inform called: storing {len(trades)} upcoming trades for time {time}")
