@@ -1,4 +1,6 @@
 from mable.cargo_bidding import TradingCompany, Bid
+import random
+
 
 class Company12(TradingCompany):
     def __init__(self, fleet, name):
@@ -7,11 +9,9 @@ class Company12(TradingCompany):
         # Maps each trade to the vessel and schedule we planned for it in inform()
         self._planned_schedules = {}
 
-
-
-    #  Store information about trades that will appear in the next auction.
+    # Store information about trades that will appear in the next auction.
     def pre_inform(self, trades, time):
-        print(f"pre_inform called: storing {len(trades)} upcoming trades for time {time}")
+        print(f"[INFO] pre_inform called: storing {len(trades)} upcoming trades for time {time}")
         self._future_trades = trades
 
     # Tentatively add the trade to this vessel's schedule.
@@ -25,15 +25,14 @@ class Company12(TradingCompany):
                 return True, new_schedule
 
             print(
-                f"Schedule not feasible for vessel {vessel.name} "
+                f"[DEBUG] Schedule not feasible for vessel {vessel.name} "
                 f"with trade {getattr(trade, 'id', 'unknown')} (time-window/capacity/other)."
             )
             return False, None
 
         except Exception as e:
-            print(f"Exception while trying schedule on vessel {vessel.name}: {e}")
+            print(f"[ERROR] Exception while trying schedule on vessel {vessel.name}: {e}")
             return False, None
-
 
     # Try all vessels and return the first (vessel, schedule) pair that yields a feasible schedule.
     # If none are feasible, return (None, None).
@@ -44,7 +43,7 @@ class Company12(TradingCompany):
                 return vessel, sched
 
         print(
-            f"No feasible vessel found for trade "
+            f"[INFO] No feasible vessel found for trade "
             f"{getattr(trade, 'id', 'unknown')} – will NOT bid on this trade."
         )
         return None, None
@@ -52,7 +51,7 @@ class Company12(TradingCompany):
     # Decide which trades to bid on in the current auction round.
     # Only bid on trades for which we can find at least one feasible vessel schedule.
     def inform(self, trades, *args, **kwargs):
-        print(f"\ninform called: {len(trades)} trades offered this round")
+        print(f"\n[INFO] inform called: {len(trades)} trades offered this round")
         bids = []
         self._planned_schedules = {}
 
@@ -62,36 +61,41 @@ class Company12(TradingCompany):
                 destination = getattr(trade, "destination_port", getattr(trade, "end_port", None))
 
                 print(
-                    f"Trade {i}: origin={getattr(origin, 'name', origin)}, "
+                    f"[DEBUG] Trade {i}: origin={getattr(origin, 'name', origin)}, "
                     f"dest={getattr(destination, 'name', destination)}, "
                     f"amount={getattr(trade, 'amount', 'NA')}"
                 )
 
                 vessel, sched = self.plan_for_trade(trade)
                 if vessel is None or sched is None:
+                    # Cannot serve this trade feasibly, so skip it
                     continue
-               
+
+                # Remember this plan so we can apply it if we actually win the contract
                 self._planned_schedules[trade] = (vessel, sched)
 
                 cost = self.predict_cost(vessel, trade)
-                # preliminary agent: bid at our estimated cost
-                bid_amount = cost*1.2 
+
+                # Add a small profit margin but keep bids close to cost so we still win trades
+                margin = 1.05 + 0.20 * random.random()  # between 1.05 and 1.30
+                bid_amount = cost * margin
+
                 bids.append(Bid(amount=bid_amount, trade=trade))
                 print(
-                    f"Trade {i}: vessel={vessel.name}, "
-                    f"bid={bid_amount}, cost_estimate={cost}"
+                    f"[BID] Trade {i}: vessel={vessel.name}, "
+                    f"bid={bid_amount:.2f}, cost_estimate={cost:.2f}, margin={margin:.3f}"
                 )
 
             except Exception as e:
-                print(f"Failed to process trade {i}: {e}")
+                print(f"[ERROR] Failed to process trade {i}: {e}")
 
-        print(f"Total bids prepared: {len(bids)}")
+        print(f"[INFO] Total bids prepared: {len(bids)}")
         return bids
 
     # Apply schedules for the trades we actually won in the auction.
     # Uses the plans computed earlier in inform(), with a fallback recomputation if needed.
     def receive(self, contracts, auction_ledger=None, *args, **kwargs):
-        print(f"\nreceive called: {len(contracts)} contracts won")
+        print(f"\n[INFO] receive called: {len(contracts)} contracts won")
 
         for i, contract in enumerate(contracts):
             trade = contract.trade
@@ -99,13 +103,13 @@ class Company12(TradingCompany):
 
             if planned is None:
                 print(
-                    f"No stored plan for trade {getattr(trade, 'id', 'unknown')} "
+                    f"[WARN] No stored plan for trade {getattr(trade, 'id', 'unknown')} "
                     f"in receive(); recomputing schedule."
                 )
                 vessel, sched = self.plan_for_trade(trade)
                 if vessel is None or sched is None:
                     print(
-                        f"Even recomputed schedule is infeasible for trade "
+                        f"[ERROR] Even recomputed schedule is infeasible for trade "
                         f"{getattr(trade, 'id', 'unknown')}. Leaving it unscheduled."
                     )
                     continue
@@ -115,20 +119,20 @@ class Company12(TradingCompany):
             try:
                 if not sched.verify_schedule():
                     print(
-                        f"Planned schedule for trade {getattr(trade, 'id', 'unknown')} "
+                        f"[ERROR] Planned schedule for trade {getattr(trade, 'id', 'unknown')} "
                         f"failed verify_schedule() in receive(). Skipping."
                     )
                     continue
 
                 print(
-                    f"Applying schedule for trade {getattr(trade, 'id', 'unknown')} "
+                    f"[INFO] Applying schedule for trade {getattr(trade, 'id', 'unknown')} "
                     f"to vessel {vessel.name}"
                 )
                 vessel.schedule = sched
 
             except Exception as e:
                 print(
-                    f"Exception while applying schedule for trade "
+                    f"[ERROR] Exception while applying schedule for trade "
                     f"{getattr(trade, 'id', 'unknown')} on vessel {vessel.name}: {e}"
                 )
 
@@ -143,11 +147,22 @@ class Company12(TradingCompany):
             origin_name = getattr(origin, "name", origin)
             dest_name = getattr(destination, "name", destination)
 
-            total_cost = 1000.0  
-            print(f"Predicted cost for trade {origin_name}->{dest_name}: {total_cost}")
+            cargo_amount = float(getattr(trade, "amount", 0.0))
+
+            # Tuned cost model:
+            # - slightly higher base cost
+            # - variable cost scaled up so we roughly match MABLE's real costs
+            base_cost = 800.0
+            variable_cost = 0.04 * cargo_amount  # previously 0.01, now more pessimistic
+
+            total_cost = base_cost + variable_cost
+
+            print(
+                f"[DEBUG] Predicted cost for trade {origin_name}->{dest_name}: "
+                f"base={base_cost}, variable={variable_cost:.2f}, total={total_cost:.2f}"
+            )
             return total_cost
 
         except Exception as e:
-            print(f"Failed to predict cost: {e}")
-            # Return a large number to avoid accidentally underbidding when we are unsure
+            print(f"[ERROR] Failed to predict cost: {e}")
             return 10_000.0
