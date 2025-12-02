@@ -42,24 +42,28 @@ class Company12(TradingCompany):
 
     # ---------- NEW: margin logic ----------
     def _compute_margin(self, trade):
-        """Choose a profit margin based on trade characteristics."""
+        """Choose a profit margin based on trade size."""
         amount = float(getattr(trade, "amount", 0.0))
 
-        # base margin
-        margin = 1.5
+        # Start a bit higher than before
+        margin = 1.6
 
-        # large cargoes: more risk / fuel / time → slightly higher margin
+        # Very large cargoes: more risk and time, ask for more money
         if amount > 70000:
-            margin += 0.3
-        # small cargoes: we can be a bit more aggressive on price
-        elif amount < 30000:
-            margin -= 0.2
+            margin += 0.3        # -> ~1.9
+        # Medium cargoes: still decent margin
+        elif amount > 40000:
+            margin += 0.1        # -> ~1.7
+        # Small cargoes: we can be slightly more competitive
+        else:
+            margin -= 0.1        # -> ~1.5
 
-        # never go below a minimal safety margin
-        margin = max(margin, 1.05)
+        # Never go below a minimal safety margin
+        margin = max(margin, 1.15)
 
         print(f"Computed margin {margin:.2f} for amount={amount:.1f}")
         return margin
+
     # --------------------------------------
 
     def inform(self, trades, *args, **kwargs):
@@ -145,6 +149,7 @@ class Company12(TradingCompany):
         self._future_trades = None
     
     def predict_cost(self, vessel, trade):
+        """Rough cost estimate using cargo amount + distance (if available)."""
         try:
             origin = getattr(trade, "origin_port", getattr(trade, "start_port", "UNKNOWN"))
             destination = getattr(trade, "destination_port", getattr(trade, "end_port", "UNKNOWN"))
@@ -153,19 +158,42 @@ class Company12(TradingCompany):
 
             amount = float(getattr(trade, "amount", 0.0))
 
-            # Simple cost model:
-            # - base component (crew, fixed costs)
-            # - variable component scaling with cargo amount
+            # ---- estimate distance in nautical miles if possible ----
+            distance_nm = None
+            if origin not in (None, "UNKNOWN") and destination not in (None, "UNKNOWN"):
+                for method_name in ["distance", "distance_to", "great_circle_distance"]:
+                    func = getattr(origin, method_name, None)
+                    if callable(func):
+                        try:
+                            distance_nm = float(func(destination))
+                            break
+                        except Exception:
+                            pass
+
+            # If we failed to get distance from the API, fall back to something simple
+            if distance_nm is None:
+                distance_nm = 0.0
+
+            # ---- cost model ----
+            # base: crew / fixed ops
             base_cost = 500.0
-            variable_per_unit = 0.06
+
+            # scales with cargo amount
+            variable_per_unit = 0.05   # tuned roughly from your previous runs
             variable_cost = variable_per_unit * amount
 
-            total_cost = base_cost + variable_cost
+            # scales with distance (fuel, time at sea)
+            # if distance is 0 (unknown), this just becomes 0
+            distance_rate = 0.3        # cost per nautical mile
+            distance_cost = distance_rate * distance_nm
+
+            total_cost = base_cost + variable_cost + distance_cost
 
             print(
                 f"[cost] {origin_name} -> {dest_name}, "
-                f"amount={amount:.1f}, base={base_cost:.1f}, "
-                f"variable={variable_cost:.1f}, total={total_cost:.1f}"
+                f"amount={amount:.1f}, dist_nm={distance_nm:.1f}, "
+                f"base={base_cost:.1f}, var={variable_cost:.1f}, "
+                f"dist_cost={distance_cost:.1f}, total={total_cost:.1f}"
             )
             return total_cost
 
