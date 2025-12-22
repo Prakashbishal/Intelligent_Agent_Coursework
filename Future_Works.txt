@@ -46,3 +46,4 @@ Which bids won.
 What typical margins competitors use.
 Estimate competitor profit factors over time.
 Adapt your bidding strategy to undercut them slightly when it’s worth it.
+

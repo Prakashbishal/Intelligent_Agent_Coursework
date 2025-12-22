@@ -1,0 +1,76 @@
+Notes for report: what changed, where, how, and why
+A) Reduced penalties to zero
+
+What: Switched from storing one schedule per trade to building one combined schedule per vessel for all trades you bid on (in the same auction round), and applying it once.
+Where: inform() and receive().
+How:
+
+In inform(), after picking candidate bids, trades are grouped by vessel (by_vessel).
+
+For each vessel, we start from the vessel’s current schedule and add selected trades one by one (try_schedule_on_vessel(..., base=base)).
+
+Only trades that fit the combined schedule are kept.
+
+We store the resulting schedule in vessel_plan[vessel].
+
+In receive(), we apply the combined schedule once per vessel rather than overwriting schedules trade-by-trade.
+Why: The earlier per-trade planning could overwrite schedules with plans that did not include other won trades, leading to late arrivals and penalties even when individual verify_schedule() checks passed.
+
+B) Market-aware bidding using auction_ledger
+
+What: Used historic auction outcomes to anchor bids near market-clearing levels while keeping a safety floor.
+Where: _update_market(), _lane_median(), _global_ratio(), _bid().
+How:
+
+Store recent “clearing price” samples per lane bucket: (origin, destination, amount_bucket) in lane_prices.
+
+Store a global ratio history payment / (estimated_cost * fudge) in ratio_hist.
+
+When bidding, consider:
+
+baseline cost_fudged * (1 + margin)
+
+lane median (undercut slightly)
+
+global ratio target (undercut slightly)
+
+Enforce a minimum acceptable bid cost_fudged * (1 + safe_profit).
+Why: Second-price reverse auctions can make you win at prices that are still too low. Market signals reduce guessing and improve relative performance without needing heavy competitor modelling.
+
+C) Loss-avoidance safety against under-estimated costs
+
+What: Added a conservative multiplier and minimum profit guard.
+Where: fudge and safe_profit used in inform() and _bid().
+How: Bid floor prevents bidding below a safe threshold even if market estimates are low.
+Why: Your cost model is approximate; the simulator’s true cost can be higher. Without a buffer, you can win trades that lose money.
+
+D) Scalability for high trade months (~140/month)
+
+What: Kept computation light and capped bids.
+Where: _cap(), inform(), _cost() caching.
+How:
+
+Bid cap scales with fleet size (max(min_cap, fleet * cap_mult)).
+
+Cache cost computations per round (_cost_cache).
+
+Avoids expensive lookahead or deep optimisation loops.
+Why: The final tournament includes high trade volumes and timeouts matter. This design stays near O(T log T) per auction round with small constants.
+
+E) Penalty-risk reduction by limiting per-vessel intake
+
+What: Soft constraint that avoids overstuffing a single vessel in one auction round.
+Where: per_vessel_limit in inform().
+How: Track use_count by vessel id and skip once limit is reached.
+Why: Reduces fragile schedules and helps keep penalties low while still bidding competitively.
+
+
+
+Playground Improvement:
+Expanded opponent set by running multiple baselines with different profit_factor values to represent different bidding behaviours (aggressive vs conservative).
+
+Fleet composition stress-testing implemented to mirror tournament configurations (BalancedFleet, Small/Medium/Large-only fleets and asymmetric distributions).
+
+Trade volume scaling tests added up to 140 trades/month to validate runtime safety and robustness under tournament-scale load.
+
+Multi-seed evaluation introduced to reduce sensitivity to randomness and to measure consistent relative performance rather than single-run outcomes.
