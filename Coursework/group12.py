@@ -1,217 +1,295 @@
+# group12.py
+from collections import defaultdict, deque
+import statistics
+
 from mable.cargo_bidding import TradingCompany, Bid
+
 
 class Company12(TradingCompany):
     def __init__(self, fleet, name):
         super().__init__(fleet, name)
-        self._future_trades = None
-        self._planned_schedules = {}
+
+        self.upcoming = None
+
+        self.vessel_plan = {}
+        self.trade_to_vessel = {}
+
+        self.fudge = 1.15
+        self.safe_profit = 0.02
+
+        self.lane_prices = defaultdict(lambda: deque(maxlen=30))
+        self.ratio_hist = deque(maxlen=60)
+        self.ratio_floor = 1.04
+        self.ratio_cap = 1.25
+        self.undercut = 0.985
+
+        self.min_cap = 20
+        self.cap_mult = 8
+        self.per_vessel_limit = 2
+
+        self._cost_cache = {}
+
+        self.debug = False
+        self.debug_n = 6
 
     def pre_inform(self, trades, time):
-        print(f"pre_inform called: storing {len(trades)} upcoming trades for time {time}")
-        self._future_trades = trades
+        self.upcoming = trades
+        if self.debug:
+            print(f"pre_inform: {len(trades)} trades stored at {time}")
 
-    def try_schedule_on_vessel(self, vessel, trade):
-        try:
-            new_schedule = vessel.schedule.copy()
-            new_schedule.add_transportation(trade)
+    def _trade_key(self, trade):
+        o = getattr(trade, "origin_port", getattr(trade, "start_port", None))
+        d = getattr(trade, "destination_port", getattr(trade, "end_port", None))
+        o_name = getattr(o, "name", str(o))
+        d_name = getattr(d, "name", str(d))
 
-            if new_schedule.verify_schedule():
-                return True, new_schedule
-
-            print(
-                f"Schedule not feasible for vessel {vessel.name} "
-                f"with trade {getattr(trade, 'id', 'unknown')}."
-            )
-            return False, None
-
-        except Exception as e:
-            print(f"Exception while trying schedule on vessel {vessel.name}: {e}")
-            return False, None
-
-    def plan_for_trade(self, trade):
-        for vessel in self._fleet:
-            feasible, sched = self.try_schedule_on_vessel(vessel, trade)
-            if feasible:
-                return vessel, sched
-
-        print(
-            f"No feasible vessel found for trade "
-            f"{getattr(trade, 'id', 'unknown')} – will NOT bid on this trade."
-        )
-        return None, None
-
-    # ---------- NEW: margin logic ----------
-    def _compute_margin(self, trade):
-        """Choose a profit margin based on trade size."""
-        amount = float(getattr(trade, "amount", 0.0))
-
-        # Start a bit higher than before
-        margin = 1.6
-
-        # Very large cargoes: more risk and time, ask for more money
-        if amount > 70000:
-            margin += 0.3        # -> ~1.9
-        # Medium cargoes: still decent margin
-        elif amount > 40000:
-            margin += 0.1        # -> ~1.7
-        # Small cargoes: we can be slightly more competitive
+        amt = float(getattr(trade, "amount", 0.0))
+        if amt <= 20000:
+            bucket = "0-20k"
+        elif amt <= 40000:
+            bucket = "20-40k"
+        elif amt <= 70000:
+            bucket = "40-70k"
         else:
-            margin -= 0.1        # -> ~1.5
+            bucket = "70k+"
 
-        # Never go below a minimal safety margin
-        margin = max(margin, 1.15)
+        return (o_name, d_name, bucket)
 
-        print(f"Computed margin {margin:.2f} for amount={amount:.1f}")
-        return margin
+    def _lane_median(self, trade):
+        hist = self.lane_prices.get(self._trade_key(trade))
+        if not hist:
+            return None
+        return statistics.median(hist)
 
-    # --------------------------------------
+    def _global_ratio(self):
+        if not self.ratio_hist:
+            return None
+        r = statistics.median(self.ratio_hist)
+        if r < self.ratio_floor:
+            r = self.ratio_floor
+        if r > self.ratio_cap:
+            r = self.ratio_cap
+        return r
 
-    def inform(self, trades, *args, **kwargs):
-        print(f"\ninform called: {len(trades)} trades offered this round")
-        bids = []
-        self._planned_schedules = {}
+    def _trade_id(self, trade):
+        return getattr(trade, "id", id(trade))
 
-        for i, trade in enumerate(trades):
-            try:
-                origin = getattr(trade, "origin_port", getattr(trade, "start_port", None))
-                destination = getattr(trade, "destination_port", getattr(trade, "end_port", None))
+    def _cost(self, vessel, trade):
+        k = (id(vessel), self._trade_id(trade))
+        if k in self._cost_cache:
+            return self._cost_cache[k]
+        c = self.predict_cost(vessel, trade)
+        self._cost_cache[k] = c
+        return c
 
-                print(
-                    f"Trade {i}: origin={getattr(origin, 'name', origin)}, "
-                    f"dest={getattr(destination, 'name', destination)}, "
-                    f"amount={getattr(trade, 'amount', 'NA')}"
-                )
-
-                vessel, sched = self.plan_for_trade(trade)
-                if vessel is None or sched is None:
-                    continue
-
-                self._planned_schedules[trade] = (vessel, sched)
-
-                cost = self.predict_cost(vessel, trade)
-                margin = self._compute_margin(trade)
-                bid_amount = cost * margin
-
-                bids.append(Bid(amount=bid_amount, trade=trade))
-                print(
-                    f"Trade {i}: vessel={vessel.name}, "
-                    f"bid={bid_amount:.2f}, cost_estimate={cost:.2f}, margin={margin:.2f}"
-                )
-
-            except Exception as e:
-                print(f"Failed to process trade {i}: {e}")
-
-        print(f"Total bids prepared: {len(bids)}")
-        return bids
-
-    def receive(self, contracts, auction_ledger=None, *args, **kwargs):
-        print(f"\nreceive called: {len(contracts)} contracts won")
-
-        for i, contract in enumerate(contracts):
-            trade = contract.trade
-            planned = self._planned_schedules.get(trade, None)
-
-            if planned is None:
-                print(
-                    f"No stored plan for trade {getattr(trade, 'id', 'unknown')} "
-                    f"in receive(); recomputing schedule."
-                )
-                vessel, sched = self.plan_for_trade(trade)
-                if vessel is None or sched is None:
-                    print(
-                        f"Even recomputed schedule is infeasible for trade "
-                        f"{getattr(trade, 'id', 'unknown')}. Leaving it unscheduled."
-                    )
-                    continue
-            else:
-                vessel, sched = planned
-
-            try:
-                if not sched.verify_schedule():
-                    print(
-                        f"Planned schedule for trade {getattr(trade, 'id', 'unknown')} "
-                        f"failed verify_schedule() in receive(). Skipping."
-                    )
-                    continue
-
-                print(
-                    f"Applying schedule for trade {getattr(trade, 'id', 'unknown')} "
-                    f"to vessel {vessel.name}"
-                )
-                vessel.schedule = sched
-
-            except Exception as e:
-                print(
-                    f"Exception while applying schedule for trade "
-                    f"{getattr(trade, 'id', 'unknown')} on vessel {vessel.name}: {e}"
-                )
-
-        self._future_trades = None
-    
     def predict_cost(self, vessel, trade):
-        """Rough cost estimate using cargo amount + distance (if available)."""
         try:
-            origin = getattr(trade, "origin_port", getattr(trade, "start_port", "UNKNOWN"))
-            destination = getattr(trade, "destination_port", getattr(trade, "end_port", "UNKNOWN"))
-            origin_name = getattr(origin, "name", origin)
-            dest_name = getattr(destination, "name", destination)
+            o = getattr(trade, "origin_port", getattr(trade, "start_port", "UNKNOWN"))
+            d = getattr(trade, "destination_port", getattr(trade, "end_port", "UNKNOWN"))
+            amt = float(getattr(trade, "amount", 0.0))
 
-            amount = float(getattr(trade, "amount", 0.0))
-
-            # ---- estimate distance in nautical miles if possible ----
-            distance_nm = None
-            if origin not in (None, "UNKNOWN") and destination not in (None, "UNKNOWN"):
-                for method_name in ["distance", "distance_to", "great_circle_distance"]:
-                    func = getattr(origin, method_name, None)
-                    if callable(func):
+            dist = 0.0
+            if o not in (None, "UNKNOWN") and d not in (None, "UNKNOWN"):
+                for fn in ("distance", "distance_to", "great_circle_distance"):
+                    f = getattr(o, fn, None)
+                    if callable(f):
                         try:
-                            distance_nm = float(func(destination))
+                            dist = float(f(d))
                             break
                         except Exception:
                             pass
 
-            # If we failed to get distance from the API, fall back to something simple
-            if distance_nm is None:
-                distance_nm = 0.0
+            base = 600.0
+            per_unit = 0.055
+            per_nm = 0.32
 
-            # ---- cost model ----
-            # base: crew / fixed ops
-            base_cost = 500.0
-
-            # scales with cargo amount
-            variable_per_unit = 0.05   # tuned roughly from your previous runs
-            variable_cost = variable_per_unit * amount
-
-            # scales with distance (fuel, time at sea)
-            # if distance is 0 (unknown), this just becomes 0
-            distance_rate = 0.3        # cost per nautical mile
-            distance_cost = distance_rate * distance_nm
-
-            total_cost = base_cost + variable_cost + distance_cost
-
-            print(
-                f"[cost] {origin_name} -> {dest_name}, "
-                f"amount={amount:.1f}, dist_nm={distance_nm:.1f}, "
-                f"base={base_cost:.1f}, var={variable_cost:.1f}, "
-                f"dist_cost={distance_cost:.1f}, total={total_cost:.1f}"
-            )
-            return total_cost
-
-        except Exception as e:
-            print(f"[cost] Failed to estimate cost: {e}")
-            # Large fallback so we don't accidentally bid very low when we have no idea
+            return base + per_unit * amt + per_nm * dist
+        except Exception:
             return 10_000.0
 
+    def try_schedule_on_vessel(self, vessel, trade, base=None):
+        try:
+            s = base.copy() if base is not None else vessel.schedule.copy()
+            s.add_transportation(trade)
+            if s.verify_schedule():
+                return True, s
+            return False, None
+        except Exception:
+            return False, None
 
+    def plan_for_trade(self, trade):
+        best = None
+        for v in self._fleet:
+            ok, s = self.try_schedule_on_vessel(v, trade)
+            if not ok:
+                continue
+            c = self._cost(v, trade)
+            if best is None or c < best[0]:
+                best = (c, v, s)
+        if best is None:
+            return None, None
+        return best[1], best[2]
 
-# Notes:
-# getattr is used to prevent crashing and null errors
-# verbose is used to debug the code in terminal
+    def _fallback_margin(self, trade):
+        amt = float(getattr(trade, "amount", 0.0))
+        m = 0.08
+        if amt > 70000:
+            m += 0.03
+        elif amt > 40000:
+            m += 0.01
+        else:
+            m -= 0.02
+        if m < 0.06:
+            m = 0.06
+        if m > 0.25:
+            m = 0.25
+        return m
 
-# Places to improve:
-# 1. bid_amount
-# 2. predict_cost
-# 3. plan_for_trade
-# 4. pre_inform(use the future_trade concept)
+    def _bid(self, trade, cost_fudged):
+        base = cost_fudged * (1.0 + self._fallback_margin(trade))
 
+        lane = self._lane_median(trade)
+        g = self._global_ratio()
 
+        options = [base]
+        if lane is not None:
+            options.append(lane * self.undercut)
+        if g is not None:
+            options.append(cost_fudged * g * self.undercut)
+
+        bid = min(options)
+        floor = cost_fudged * (1.0 + self.safe_profit)
+        if bid < floor:
+            bid = floor
+        return bid
+
+    def _cap(self):
+        return max(self.min_cap, len(self._fleet) * self.cap_mult)
+
+    def _order_key(self, trade):
+        for attr in ("pickup_time", "start_time", "earliest_pickup", "time", "release_time"):
+            if hasattr(trade, attr):
+                try:
+                    return float(getattr(trade, attr))
+                except Exception:
+                    pass
+        return float(getattr(trade, "amount", 0.0))
+
+    def inform(self, trades, *args, **kwargs):
+        self.vessel_plan = {}
+        self.trade_to_vessel = {}
+        self._cost_cache = {}
+
+        cap = self._cap()
+
+        candidates = []
+        use_count = defaultdict(int)
+
+        for i, t in enumerate(trades):
+            v, _ = self.plan_for_trade(t)
+            if v is None:
+                continue
+
+            if use_count[id(v)] >= self.per_vessel_limit:
+                continue
+            use_count[id(v)] += 1
+
+            raw = self._cost(v, t)
+            cf = raw * self.fudge
+            b = self._bid(t, cf)
+
+            candidates.append((b, t, v))
+
+            if self.debug and i < self.debug_n:
+                print(f"cand: {v.name} cost={raw:.1f} bid={b:.1f}")
+
+        candidates.sort(key=lambda x: x[0])
+        candidates = candidates[:cap]
+
+        by_vessel = defaultdict(list)
+        for b, t, v in candidates:
+            by_vessel[v].append((b, t))
+
+        final = []
+        for v, items in by_vessel.items():
+            items.sort(key=lambda x: self._order_key(x[1]))
+
+            base = v.schedule.copy()
+            kept = []
+
+            for b, t in items:
+                ok, ns = self.try_schedule_on_vessel(v, t, base=base)
+                if not ok:
+                    continue
+                base = ns
+                kept.append((b, t))
+
+            if kept:
+                self.vessel_plan[v] = base
+                for b, t in kept:
+                    self.trade_to_vessel[t] = v
+                    final.append((b, t))
+
+        final.sort(key=lambda x: x[0])
+        return [Bid(amount=b, trade=t) for b, t in final]
+
+    def receive(self, contracts, auction_ledger=None, *args, **kwargs):
+        if auction_ledger is not None:
+            self._update_market(auction_ledger)
+
+        touched = set()
+        for c in contracts:
+            v = self.trade_to_vessel.get(c.trade)
+            if v is not None:
+                touched.add(v)
+
+        for v in touched:
+            s = self.vessel_plan.get(v)
+            if s is None:
+                continue
+            try:
+                if s.verify_schedule():
+                    v.schedule = s
+            except Exception:
+                pass
+
+        self.upcoming = None
+
+    def _update_market(self, auction_ledger):
+        entries = []
+        if isinstance(auction_ledger, (list, tuple)):
+            entries = auction_ledger
+        elif isinstance(auction_ledger, dict):
+            for k in ("auctions", "entries", "ledger"):
+                v = auction_ledger.get(k)
+                if isinstance(v, (list, tuple)):
+                    entries = v
+                    break
+
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+
+            t = e.get("trade")
+            if t is None:
+                continue
+
+            price = None
+            for k in ("second_price", "clearing_price", "winning_price", "payment", "price"):
+                if k in e and e[k] is not None:
+                    try:
+                        price = float(e[k])
+                        break
+                    except Exception:
+                        pass
+            if price is None:
+                continue
+
+            self.lane_prices[self._trade_key(t)].append(price)
+
+            v, _ = self.plan_for_trade(t)
+            if v is None:
+                continue
+            cf = self._cost(v, t) * self.fudge
+            if cf > 1e-6:
+                self.ratio_hist.append(price / cf)

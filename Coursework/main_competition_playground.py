@@ -3,21 +3,19 @@ from mable.examples import environment, fleets, companies
 import group12
 
 def build_specification():
-    number_of_month = 5 
-    trades_per_auction = 3
+    number_of_month = 8
+    trades_per_auction = 20  # closer to tournament feel; try 3 for debug, 20+ for realism
 
     specifications_builder = environment.get_specification_builder(
         trades_per_occurrence=trades_per_auction,
         num_auctions=number_of_month
     )
 
-    # My custom agent
     my_fleet = fleets.mixed_fleet(num_suezmax=1, num_aframax=1, num_vlcc=1)
     specifications_builder.add_company(
         group12.Company12.Data(group12.Company12, my_fleet, group12.Company12.__name__)
     )
 
-    # Competitor agents
     arch_enemy_fleet = fleets.mixed_fleet(num_suezmax=1, num_aframax=1, num_vlcc=1)
     specifications_builder.add_company(
         companies.MyArchEnemy.Data(
